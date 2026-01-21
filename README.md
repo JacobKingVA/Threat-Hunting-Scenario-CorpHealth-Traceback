@@ -459,24 +459,25 @@ DeviceProcessEvents
 
 ## 🚩 Flag 14 – Privilege Token Modification
 
-**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+**Objective**: Windows recorded a ProcessPrimaryTokenModified event. What is the "InitiatingProcessId" of the process whose token privileges were modified?
 
 **Hints:**
-1. Search for other files containing the word "inventory" created around the same timeframe.
+1. Filter DeviceEvents where AdditionalFields contains either: "tokenChangeDescription" or "Privileges were added".
 
 **Finding**:  
 - **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
 
 **KQL Query**:
 ```kql
-DeviceFileEvents
-| where TimeGenerated >= datetime(2025-11-10)
+DeviceEvents
 | where DeviceName == "ch-ops-wks02"
-| where FileName contains "inventory"
-| order by TimeGenerated asc
-| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+| where TimeGenerated between (datetime(2025-11-10) .. datetime(2025-12-03) )
+| where AdditionalFields contains "tokenChangeDescription" or AdditionalFields contains "Privileges were added"
+| where InitiatingProcessCommandLine contains "Maintenance"
+| order by TimeGenerated asc 
+| project TimeGenerated, ActionType, AdditionalFields, DeviceName, InitiatingProcessAccountName, InitiatingProcessCommandLine, InitiatingProcessId
 ```
-<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+<img width="2076" height="245" alt="image" src="https://github.com/user-attachments/assets/65775402-ef6f-46ff-8c7e-f5839c34c4e8" />
 
 **Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
 
