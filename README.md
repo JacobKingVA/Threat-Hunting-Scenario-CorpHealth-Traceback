@@ -181,111 +181,719 @@ DeviceNetworkEvents
 | order by TimeGenerated asc 
 | project TimeGenerated, ActionType, DeviceName, InitiatingProcessAccountName, InitiatingProcessCommandLine, LocalIP, LocalPort, RemoteIP, RemotePort, InitiatingProcessRemoteSessionDeviceName, InitiatingProcessRemoteSessionIP
 ```
-
 <img width="378" height="67" alt="image" src="https://github.com/user-attachments/assets/093177b1-453a-4097-93cf-12bbd5e5c61a" />
 
-**Notes:** After identifying the first initiated outbound communication `2025-11-23T03:46:08.400686Z`, I noticed additional details that would be valuable in diving deeper into the threat hunt. I can see a suspicious outbound port and remote session device name. This KQL query leads into the next flag.
+**Notes:** From the previous query, it can be observed that there is a remoteIP of 127.0.0.1 and a Remote port of 8080. While 127.0.0.1 is a loopback address, it is still concerning especially with the context that remote port 8080 is being used. This can allude to port forwarding, tunneling, or proxies which can be used to deliver malware or remotely monitor the network. 
+
 ---
 
-## 🚩 Flag 4 – Keylogger Artifact Written
+## 🚩 Flag 4 – Confirm the Successful Beacon Timestamp
 
-**Objective**: Detect keylogging behavior or artifacts.
+**Objective**: Determine when the most recent (latest) timestamp where CH-OPS-WKS02 successfully connected to the beacon IP and port.
+
+**Hints:**
+1. Keep only events where InitiatingProcessCommandLine contains the maintenance script.
+2. Match the RemoteIP and the RemotePort from the previous flag.
+3. Take the newest entry.
 
 **Finding**:  
-- **Suspicious Artifact**: `systemreport.lnk`  
-- **Dropped via**: `explorer.exe` (indicating interaction)  
-- **Session Origin**: BUBBA
+- **Most Recent Connection Timestamp**: `2025-11-30T01:03:17.6985973Z`  
 
 **KQL Query**:
 ```kql
-let VmName = "anthony-001";
-let Time = datetime(2025-05-07T02:00:36.794406Z);
+DeviceNetworkEvents
+| where TimeGenerated between (datetime(2025-11-10) .. datetime(2025-12-03) )
+| where DeviceName == "ch-ops-wks02"
+| where ActionType == "ConnectionSuccess"
+| where InitiatingProcessCommandLine has "MaintenanceRunner_Distributed.ps1"
+| where RemoteIP == "127.0.0.1"
+| order by TimeGenerated desc 
+| project TimeGenerated, ActionType, DeviceName, InitiatingProcessAccountName, InitiatingProcessCommandLine, LocalIP, LocalPort, RemoteIP, RemotePort, InitiatingProcessRemoteSessionDeviceName, InitiatingProcessRemoteSessionIP
+```
+<img width="2096" height="107" alt="image" src="https://github.com/user-attachments/assets/8f877cb9-26cc-4f0f-ba6a-943d44ac6ccc" />
+
+
+**Notes:** I was able to narrow down the latest successful connection based on the initiating process command line script as well as the remote IP address. I verified the Remote port was 8080 in the results of the query. This is the anchor point to determine when the script reached out to the external IP. Further investigation is needed to determine what occurred as a result of that connection.
+
+---
+
+## 🚩 Flag 5 – Unexpected Staging Activity Detected
+
+**Objective**: Check for staged data. What is the full file path of the First primary staging artifact created during the attack?
+
+**Hints:**
+1. Look for created files under any of the “CorpHealth” operational folders.
+2. Focus especially on Diagnostics directories — attackers commonly use them for staging.
+
+**Finding**:  
+- **First Primary Staged Data File Path**: `C:\ProgramData\Microsoft\Diagnostics\CorpHealth\inventory_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
 DeviceFileEvents
-| where DeviceName == VmName
-| where InitiatingProcessFileName == "explorer.exe"
-| where InitiatingProcessRemoteSessionDeviceName == @"BUBBA"
-| where Timestamp < datetime(2025-05-07T04:12:46.0432324Z)
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FolderPath contains "CorpHealth"
+| order by TimeGenerated asc  
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
 ```
+<img width="2065" height="275" alt="image" src="https://github.com/user-attachments/assets/82c2f1c1-f3bb-4eac-b587-e506d8c7291e" />
 
-![image](https://github.com/user-attachments/assets/29c8da74-eac4-4dfe-9a1f-148ca2aa20e3)
-
-**Notes:** Searched for files using filters that targeted those created after executing the malware (`BitSentinelCore.exe`) and with the initiating process filename `explorer.exe`, as this was the same process that launched the malware.
-
+**Notes:** I chose to focus on files created in the "CorpHealth" operational folders on the device in question. From there, the resuls displayed files created under the "diagnostics" directory. The first one of these files that were created in the timespan being analyzed in that particular directory, the inventory_6ECFD4DF.csv file, is the first to have been generated, potentially indicating a staged file. 
 
 ---
 
-## 🚩 Flag 5 – Registry Persistence Entry
+## 🚩 Flag 6 – Confirm the Staged File's Integrity
 
-**Objective**: Check for registry changes that provide persistence.
+**Objective**: Verify the file's cryptographic fingerprint (SHA-256 hash).
 
 **Finding**:  
-- **Registry Path Modified**:  
-  `HKEY_CURRENT_USER\S-1-5-21-...\Microsoft\Windows\CurrentVersion\Run`  
-- **Process**: `BitSentinelCore.exe`
+- **SHA-256 hash of the staged file**: `7f6393568e414fc564dad6f49a06a161618b50873404503f82c4447d239f12d8`  
 
 **KQL Query**:
 ```kql
-let VmName = "anthony-001";
-let Time = datetime(2025-05-07T02:00:36.794406Z);
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FolderPath contains "CorpHealth"
+| order by TimeGenerated asc  
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="763" height="208" alt="image" src="https://github.com/user-attachments/assets/010c92ec-d5cd-4fc3-ab02-2731f84bb135" />
+
+**Notes:** Using the previous flag's KQL query, the SHA-256 hash of the staged file is identified, and can be used to determine if the file is appearing elsewhere, possibly under a different name, or if a file that may appear to be the same contains different contents to the probable staged file.
+
+---
+
+## 🚩 Flag 7 – Identify the Duplicate Staged Artifact
+
+**Objective**: After identifying a similarly named file, determine the full path of that file.
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 8 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Look for registry events that occurred shortly before or after the temporary staging files were created.
+2. Filter DeviceRegistryEvents by ActionType == "RegistryKeyCreated" or "RegistryValueSet". 
+
+**Finding**:  
+- **Anomalous Registry Key**: `HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\EventLog\Application\CorpHealthAgent`
+
+**KQL Query**:
+```kql
+let TimeOfInterest = todatetime('2025-11-25T04:15:02.4575635Z');
 DeviceRegistryEvents
-| where DeviceName == VmName
-| where InitiatingProcessFileName contains "bitsentinelcore"
+| where DeviceName == "ch-ops-wks02"
+| where TimeGenerated between ((TimeOfInterest - 3min) .. (TimeOfInterest + 3min))
+| where ActionType == "RegistryKeyCreated" or ActionType == "RegistryValueSet"
+| order by TimeGenerated asc 
+| project TimeGenerated, ActionType, DeviceName, InitiatingProcessAccountName, RegistryKey, InitiatingProcessCommandLine, InitiatingProcessFileName
 ```
+<img width="1156" height="246" alt="image" src="https://github.com/user-attachments/assets/6ca14371-d575-4bb9-98a5-fddbb3e70570" />
 
-![image](https://github.com/user-attachments/assets/ba369c73-66c8-481b-b46b-45aa6499cc79)
-
-**Notes:** Using MDE’s `DeviceRegistryEvents` table made it easy to identify the exact registry modification that enabled the malware to run.
-
+**Notes:** The variable "TimeOfInterest" is set for the time in which the staged file and subsequent temp file were created and searched before and after that event to check for any anamolous registry activity. Right before that event occurred, a registry key was created that should not have been present. The query also shows that this key was created using PowerShell, which may indicate suspicious/malicious activity. 
 
 ---
 
-## 🚩 Flag 6 – Daily Scheduled Task Created
+## 🚩 Flag 9 – Scheduled Task Persistence
 
-**Objective**: Discover persistence through scheduled tasks.
+**Objective**: Moments after the credential-related registry anomaly, additional persistence patterns are observed. At least one scheduled task was successfully created earlier in the investigation window. Which Scheduled Task Did the Attacker First Create?
+
+**Hints:**
+1. Search DeviceRegistryEvents where: ActionType == "RegistryKeyCreated" or "RegistryValueSet"
 
 **Finding**:  
-- **Scheduled Task Name**: `UpdateHealthTelemetry`  
-- **Created by**: `schtasks.exe` launched from `cmd.exe`
+- **File Path**: `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\CorpHealth_A65E64`
 
 **KQL Query**:
 ```kql
-let VmName ="anthony-001";
-let Time = datetime(2025-05-07T02:00:36.794406Z);
-DeviceProcessEvents
-| where DeviceName == VmName
-| where FileName contains "schtasks.exe"
-| where ActionType == "ProcessCreated"
+let TimeOfInterest = todatetime('2025-11-25T04:15:02.4575635Z');
+DeviceRegistryEvents
+| where DeviceName == "ch-ops-wks02"
+| where TimeGenerated between ((TimeOfInterest - 3min) .. (TimeOfInterest + 3min))
+| where ActionType == "RegistryKeyCreated" or ActionType == "RegistryValueSet"
+| where RegistryKey contains "taskcache"
+| order by TimeGenerated asc 
+| project TimeGenerated, ActionType, DeviceName, InitiatingProcessAccountName, RegistryKey, InitiatingProcessCommandLine, InitiatingProcessFileName
 ```
+<img width="1117" height="241" alt="image" src="https://github.com/user-attachments/assets/8f642b26-1fad-4040-a2ed-11c41e196c3e" />
 
-![image](https://github.com/user-attachments/assets/067262a6-786f-481a-9293-11c0287739d0)
-
-**Notes:** While reviewing the `DeviceProcessEvents` table, I searched for entries containing `schtasks.exe` and found suspicious command lines with `UpdateHealthTelemetry`.
-
----
-
-## 🚩 Flag 7 – Process Spawn Chain
-
-**Objective**: Trace the attack chain of process execution.
-
-**Finding**:  
-- **Chain of Execution**:  
-  `BitSentinelCore.exe → cmd.exe → schtasks.exe`
-
-![image](https://github.com/user-attachments/assets/656377eb-0dc6-433d-820d-c0b0ccd607e8)
-
-**Notes:** After inspecting the process tree, I was able to identify the chain of attack from the malware.
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for RegistryKeys containing "TaskCache". The TaskCache directory is important because it is the authoritative local record of all scheduled tasks on a Windows system. It is a valuable location to monitor for forms of persistence. Shortly after the time of interest, which is the creation of the staged and temp files from the previous flags, the "CorpHealth_A65E64" registry key was created.
 
 ---
 
-## 🚩 Flag 8 – Timestamp Correlation
+## 🚩 Flag 10 – Registry-based Persistence
 
-**Objective**: Tie all activity back to a single root cause.
+**Objective**: After observing a Run key value being created, a value written to an execution of a PowerShell script, and the value deleted shortly after, a potential ephemeral persistence event is hypothesized. What Registry Value Name was added to the Run key?
+
+**Hints:**
+1. Filter DeviceRegistryEvents for: RegistryKeyCreated, RegistryValueSet, RegistryKeyDeleted.
 
 **Finding**:  
-- **Initial Compromise Time**: `2025-05-07T02:00:36.794406Z`  
-- All malicious actions—file writes, execution, registry and task creation—trace back to this timestamp.
+- **Registry Value Name**: `MaintenanceRunner`
 
-**Notes:** When searching for the file the user originally clicked—**"BitSentinelCore"**—I retrieved the timestamp from the **`DeviceFileEvents`** table.
+**KQL Query**:
+```kql
+let TimeOfInterest = todatetime('2025-11-25T04:15:02.4575635Z');
+DeviceRegistryEvents
+| where DeviceName == "ch-ops-wks02"
+| where TimeGenerated between ((TimeOfInterest - 3min) .. (TimeOfInterest + 15min))
+| where ActionType in ("RegistryKeyCreated", "RegistryValueSet", "RegistryKeyDeleted")
+| where RegistryKey contains "run"
+| project TimeGenerated, ActionType, DeviceName, InitiatingProcessAccountName, RegistryKey, RegistryValueName, InitiatingProcessCommandLine
+| order by TimeGenerated asc 
+```
+<img width="1008" height="248" alt="image" src="https://github.com/user-attachments/assets/cff4d56f-1d81-4e6e-bec7-4a3b7faad128" />
+
+**Notes:** While running this query without filtering for the "run" registry key would yield the correct result, adding this cleans up the results nicely since I am only concerned with the Run key being altered. It can be observed that the Value Name "MaintenanceRunner" was added to the Run key, a name that is relevant from earlier flags. Time of interest was expanded until the anomalous behavior was observed.
+
+---
+
+## 🚩 Flag 11 – Privilege Escalation Event Timestamp
+
+**Objective**: During the intrusion, the attacker executed a simulated privilege-escalation action inside the MaintenanceRunner sequence. Locate the exact Timestamp (UTC) of the FIRST ConfigAdjust privilege-escalation event.
+
+**Hints:**
+1. Provide the timestamp exactly as the logs display it in its DeviceEvents logs.
+2. This is not a process creation, registry modification, or network event — only an Application event. 
+
+**Finding**:  
+- **Timestamp**: `2025-11-23T03:47:21.8529749Z`
+
+**KQL Query**:
+```kql
+DeviceEvents
+| where DeviceName == "ch-ops-wks02"
+| where TimeGenerated between (datetime(2025-11-10) .. datetime(2025-12-03) )
+| where AdditionalFields contains "ConfigAdjust"
+| order by TimeGenerated asc 
+| project TimeGenerated, ActionType, AdditionalFields, DeviceName, InitiatingProcessCommandLine
+```
+<img width="2097" height="318" alt="image" src="https://github.com/user-attachments/assets/16f16606-d2ef-4d0d-91f9-fb4bf25c44a7" />
+
+**Notes:** By searching for a configuration adjustment within the "AdditionalFields" parameter, it can be asserted that there is likely a privilege escalation or some other form of deliberate alteration likely to weaken defenses. While the Timestamp is the focus here, it is confirmed through the InitiatedProcessCommandLine that this has occured as part of the MaintenanceRunner sequence.
+
+---
+
+## 🚩 Flag 12 – Identify the AV Exclusion Attempt
+
+**Objective**: What folder path did the attacker attempt to add as an exclusion in Windows Defender?
+
+**Hints:**
+1. This flag focuses on identifying the exact ExclusionPath the attacker attempted to protect from detection. (e.g. C:\...\...\...\...)
+
+**Finding**:  
+- **Folder Path**: `C:\ProgramData\Corp\Ops\staging`
+
+**KQL Query**:
+```kql
+DeviceProcessEvents
+| where DeviceName == "ch-ops-wks02"
+| where TimeGenerated between (datetime(2025-11-10) .. datetime(2025-12-03) )
+| where ProcessCommandLine contains "ExclusionPath"
+| order by TimeGenerated asc 
+| project TimeGenerated, DeviceName, ActionType, AccountName, InitiatingProcessCommandLine, ProcessCommandLine
+```
+<img width="2085" height="386" alt="image" src="https://github.com/user-attachments/assets/89a30689-5bb7-4b72-ae5b-18f8d7fb8d0e" />
+
+**Notes:** By filtering for "ExclusionPath" in ProcessCommandLine, I determined that the MaintenanceRunner PowerShell script is being executed to then try and create an exclusion in Windows Defender for the "\staging" directory. This would prevent that specific folder from real-time scanning.
+
+---
+
+## 🚩 Flag 13 – PowerShell Encoded Command Execution
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 14 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 15 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 16 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 17 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 18 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 19 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 20 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 21 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 22 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 23 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 24 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 25 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 26 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 27 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 28 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 29 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 30 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+
+---
+
+## 🚩 Flag 31 – Suspicious Registry Activity
+
+**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+
+**Hints:**
+1. Search for other files containing the word "inventory" created around the same timeframe.
+
+**Finding**:  
+- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+
+**KQL Query**:
+```kql
+DeviceFileEvents
+| where TimeGenerated >= datetime(2025-11-10)
+| where DeviceName == "ch-ops-wks02"
+| where FileName contains "inventory"
+| order by TimeGenerated asc
+| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+```
+<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+
+**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
 
 ---
 
