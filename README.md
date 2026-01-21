@@ -424,30 +424,40 @@ DeviceProcessEvents
 
 ## 🚩 Flag 13 – PowerShell Encoded Command Execution
 
-**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+**Objective**: During the intrusion, a PowerShell process executed using the -EncodedCommand flag. What decoded PowerShell command was executed First?
 
 **Hints:**
-1. Search for other files containing the word "inventory" created around the same timeframe.
+1. Filter for EncodedCommand : 
+    DeviceProcessEvents
+    | where ProcessCommandLine contains "-EncodedCommand"
+2. Filter for the AccountName in question, make sure to avoid system processes
+3. Extract and decode the Base64 string:
+    PowerShell Unicode Base64 decoding (local analyst method):[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("<encoded>"))
+    KQL Unicode Base64 decoding (add this to your KQL): 
+    | extend Enc = extract(@"-EncodedCommand\s+([A-Za-z0-9+/=]+)", 1, ProcessCommandLine)
+    | extend Decoded = base64_decode_tostring(Enc)
 
 **Finding**:  
-- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+- **Decoded Plaintext Command**: `Write-Output 'token-6D5E4EE08227'`
 
 **KQL Query**:
 ```kql
-DeviceFileEvents
-| where TimeGenerated >= datetime(2025-11-10)
+DeviceProcessEvents
 | where DeviceName == "ch-ops-wks02"
-| where FileName contains "inventory"
-| order by TimeGenerated asc
-| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+| where TimeGenerated between (datetime(2025-11-10) .. datetime(2025-12-03) )
+| where ProcessCommandLine contains "-EncodedCommand"
+| where AccountName != "system"
+| extend Enc = extract(@"-EncodedCommand\s+([A-Za-z0-9+/=]+)", 1, ProcessCommandLine)
+| extend Decoded = base64_decode_tostring(Enc)
+| order by TimeGenerated asc 
 ```
-<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+<img width="2057" height="243" alt="image" src="https://github.com/user-attachments/assets/d8d21df8-636f-409e-bffd-30454448796b" />
 
-**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+**Notes:** Since the -EncodedCommand PowerShell process is observed, this means that the attacker wanted to obfuscate what they were doing. This raises concerns so the next step would be to decode the encoded string which results in the decoded plaintext command: "Write-Output 'token-6D5E4EE08227'".
 
 ---
 
-## 🚩 Flag 14 – Suspicious Registry Activity
+## 🚩 Flag 14 – Privilege Token Modification
 
 **Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
 
