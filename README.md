@@ -877,89 +877,95 @@ DeviceProcessEvents
 
 ---
 
-## 🚩 Flag 29 – Suspicious Registry Activity
+## 🚩 Flag 29 – Identify the First File the Attacker Accessed
 
-**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+**Objective**: What file did the attacker open first after the previous flag?
 
 **Hints:**
-1. Search for other files containing the word "inventory" created around the same timeframe.
+1. Use the earliest suspicious logon timestamp as your anchor point.
+2. Look at DeviceProcessEvents for processes with arguments referencing files in the command line.
+3. The attacker opened the file using a GUI application rather than a command-line tool.
+4. Reference the previous flag's ProcessID to find this flag's InitiatingProcessID.
 
 **Finding**:  
-- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+- **File Name**: `CH-OPS-WKS02 user-pass.txt`
 
 **KQL Query**:
 ```kql
-DeviceFileEvents
-| where TimeGenerated >= datetime(2025-11-10)
+DeviceProcessEvents
 | where DeviceName == "ch-ops-wks02"
-| where FileName contains "inventory"
-| order by TimeGenerated asc
-| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+| where Timestamp > datetime(2025-11-23T03:08:31.1849379Z)
+| where InitiatingProcessId == 5732
+| order by TimeGenerated asc 
+| project TimeGenerated, DeviceName, AccountName, ActionType, FileName, InitiatingProcessCommandLine, ProcessCommandLine
 ```
-<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+<img width="962" height="242" alt="image" src="https://github.com/user-attachments/assets/208007b9-34da-473c-b064-eb5b9f40b280" />
 
-**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+**Notes:** After adding to the "project" line of the previous flag's query to include ProcessId, it was determined that the ProcessId was "5732". This was then used as the InitiatingProcessId for this query. From there, it can be observed that the attacker opens up the "CH-OPS-WKS02 user-pass.txt" file using Notepad.
 
 ---
 
-## 🚩 Flag 30 – Suspicious Registry Activity
+## 🚩 Flag 30 – Determine the Attacker’s Next Action After Reading the File
 
-**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+**Objective**: After viewing the file, the attacker moved on to their next step in the intrusion chain. Early post-logon behavior often reveals operational intent — whether they used stolen credentials, attempted lateral movement, escalated privileges, or launched additional tooling. What did the attacker do next after reading the file?
 
 **Hints:**
-1. Search for other files containing the word "inventory" created around the same timeframe.
+1. Use the timestamp of the previous activity as an anchor.
+2. Search for the next process timestamps immediately after the file was opened.
+3. The next action may be: launching a command shell, attempting another logon, executing recon commands, initiating lateral movement.
 
 **Finding**:  
-- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+- **Process Name**: `ipconfig.exe`
 
 **KQL Query**:
 ```kql
-DeviceFileEvents
-| where TimeGenerated >= datetime(2025-11-10)
+DeviceProcessEvents
+| where Timestamp >= todatetime('2025-11-23T03:11:00.6981995Z')
 | where DeviceName == "ch-ops-wks02"
-| where FileName contains "inventory"
-| order by TimeGenerated asc
-| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+| order by TimeGenerated asc  
+| take 10
+| project TimeGenerated, DeviceName, AccountName, ActionType, FileName, InitiatingProcessCommandLine, InitiatingProcessFileName, ProcessCommandLine
 ```
-<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+<img width="687" height="280" alt="image" src="https://github.com/user-attachments/assets/c1fac464-fa1e-48c9-9015-a2ce2d1a9bfd" />
 
-**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+**Notes:** With this KQL query, it can be observed that the attacker launched ipconfig.exe. This can be used to display network information such as IP addresses, network interfaces, DNS information, subnets, VLANs, and more.
 
 ---
 
-## 🚩 Flag 31 – Suspicious Registry Activity
+## 🚩 Flag 31 – Identify the Next Account Accessed After Recon
 
-**Objective**: Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. Which exact registry key was created or touched during this activity?
+**Objective**: Following the attacker’s first round of local reconnaissance, the intrusion shifted from information-gathering to account-level interaction. Which user account did the attacker access immediately after their initial enumeration activity?
 
 **Hints:**
-1. Search for other files containing the word "inventory" created around the same timeframe.
+1. Anchor your time window to the moment enumeration completed.
+2. Look in DeviceLogonEvents for the next successful logon event after that timestamp.
+3. Filter by the suspicious remote session device name or IP (the same one identified earlier).
+4. You’re looking for the next account used, not the next process.
 
 **Finding**:  
-- **File Path**: `C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv`
+- **Account Name**: `ops.maintenance`
 
 **KQL Query**:
 ```kql
-DeviceFileEvents
-| where TimeGenerated >= datetime(2025-11-10)
+DeviceLogonEvents
 | where DeviceName == "ch-ops-wks02"
-| where FileName contains "inventory"
-| order by TimeGenerated asc
-| project TimeGenerated, ActionType, DeviceName, FileName, FolderPath, SHA256
+| where Timestamp > todatetime('2025-11-23T03:11:45.1631084Z')
+| where ActionType == "LogonSuccess"
+| where RemoteDeviceName == "对手"
+| order by Timestamp asc
+| take 10
+| project TimeGenerated, DeviceName, AccountName, ActionType
 ```
-<img width="2082" height="63" alt="image" src="https://github.com/user-attachments/assets/fe755054-684b-4555-a3f0-8a994d1e6643" />
+<img width="676" height="135" alt="image" src="https://github.com/user-attachments/assets/8240a097-adeb-45c3-bad7-d49f005a1e69" />
 
-**Notes:** While the KQL query from the previous flag would suffice here, I decided to refine my query to specifically search for files containing the word "inventory" since it matches the staged file. It can be observed from this query that the hashes of the staged file and similarly named second file do not match. They are also in different storage paths. The second file is located in the user's temp directory. This may indicate intermediate processing which is when an attacker transforms or filters data prior to exfiltration.
+**Notes:** Using this KQL query, it can be observed that the attacker accesses the "ops.maintenance" account following the completion of the initial enumeration activity. This lines up with other query results displaying that particular account linked to suspicious activity.
 
 ---
 
 ## 📌 Conclusion
 
-The Phantom Hackers successfully infiltrated Bubba's system by leveraging a fake antivirus dropper named **BitSentinelCore.exe**, delivered through a phishing vector. The attack established persistence via:
+After working backward through the attacker’s activity — from persistence artifacts to reconnaissance actions, then retracing their initial access — the full intrusion chain becomes clear. Each flag guided the analyst through identifying how the adversary entered the system, which accounts they leveraged, how they enumerated the host, and how they established outbound control via a reverse shell delivered through an ngrok tunnel.
 
-- Registry modifications
-- Scheduled tasks
-- Dropped artifacts indicating surveillance
-
-Every step ties back to a singular initiating event, confirming the dropper's role in the compromise.
+By rebuilding the timeline from the inside out, the investigation not only surfaced the attacker’s tooling and behavior, but clarified intent: credential harvesting, situational awareness, and staging for remote command-and-control. Indicators such as remote session IPs, logon patterns, suspicious processes, and persistence paths provided the necessary context to confirm deliberate malicious access rather than benign administrative activity.
 
 ---
