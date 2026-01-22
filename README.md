@@ -1,4 +1,4 @@
-# 🕵️‍♂️ Threat-Hunting-Scenario-CorpHealth-Traceback
+# 🕵️‍♂️ Cyber Range Threat Hunt - CorpHealth: Traceback
 
 
 ## 🎯 Scenario
