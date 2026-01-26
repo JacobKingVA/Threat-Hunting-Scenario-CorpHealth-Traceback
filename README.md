@@ -23,7 +23,7 @@ This account was granted local administrator privileges on specific systems in o
 
 It was designed to be used only through approved automation frameworks, not through interactive sign-ins.
 
-**--Anomalous Activity--** 
+<p align="center">**--Anomalous Activity--**</p> 
 
 In mid-November, routine monitoring began surfacing unusual activity tied to a workstation in the operations environment.
 
@@ -39,7 +39,7 @@ However, closer review raised concerns:
 
 Much of this activity was associated with an account that normally runs silently in the background.
 
-**The mission**: 
+<p align="center">**The mission**:</p>
 
 You are taking over as the lead analyst assigned to review historical telemetry captured by: 
 
@@ -60,7 +60,7 @@ The incident is not labeled as a confirmed breach.
 
 It has been formally categorized as:
 
-**“An Operations Activity Review”**
+<p align="center">**“An Operations Activity Review”**</p>
 
 Your investigation will determine whether it remains just that — or escalates into something more.
 
