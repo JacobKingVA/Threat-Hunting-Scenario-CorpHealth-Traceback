@@ -969,4 +969,23 @@ After working backward through the attacker’s activity — from persistence ar
 
 By rebuilding the timeline from the inside out, the investigation not only surfaced the attacker’s tooling and behavior, but clarified intent: credential harvesting, situational awareness, and staging for remote command-and-control. Indicators such as remote session IPs, logon patterns, suspicious processes, and persistence paths provided the necessary context to confirm deliberate malicious access rather than benign administrative activity.
 
+Potential remediations in response to this attack include: isolating and reimaging "ch-ops-wks02", forcing a password reset and rotating relevant credentials for the "chadmin" and "ops.maintenance" accounts, disabling the "ops.maintenance" account entirely until recreated to prevent interactive activity and logons, revoking the created Defender exclusions, blocking the ip addresses used by the attacker along with the ".ngrok.free.dev" domain the attacker used, hardening Defender to prevent or heavily monitor added exclusions, and enforce Just-In-Time admin access.
+
+---
+
+## 📌 MITRE ATT&CK Techniques
+
+The following are applicable MITRE ATT&CK techniques that are relevant to this threat hunt:
+
+- TA0001: T1078 (Valid Accounts)
+- TA0002: T1059.001, T1059.003, T1204.002
+- TA0003: T1053.005, T1547.001
+- TA0004: T1068, T1134.002
+- TA0005: T1562.001, T1027
+- TA0006: T1552.001
+- TA0007: T1082, T1016, T1087
+- TA0008: T1021.001
+- TA0011: T1071.001, T1090.003, T1573.002
+- TA0010: T1560, T1041 (attempted)
+
 ---
