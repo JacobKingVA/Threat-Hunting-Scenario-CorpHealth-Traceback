@@ -39,7 +39,7 @@ However, closer review raised concerns:
 
 Much of this activity was associated with an account that normally runs silently in the background.
 
-**<p align="center">The mission:</p>**
+**<p align="center">The Mission:</p>**
 
 You are taking over as the lead analyst assigned to review historical telemetry captured by: 
 
